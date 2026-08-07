@@ -11,15 +11,46 @@ offline-safe.
 
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
+import logging as stdlib_logging
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
-# The dataset_page package transitively imports sphinx (it's a Sphinx
-# extension). Skip the whole module when sphinx isn't installed --
-# this happens on the test-only CI matrix that doesn't pull doc deps.
-pytest.importorskip("sphinx", reason="dataset_page extension requires sphinx")
+
+def _ensure_sphinx_logging_shim():
+    """Make ``sections`` importable without sphinx installed.
+
+    ``sections.py`` touches sphinx exactly once, ``LOGGER =
+    logging.getLogger(__name__)`` against ``sphinx.util.logging``, whose
+    ``getLogger`` returns a stdlib-compatible adapter. The functions under
+    test never log, so standing in a stdlib logger keeps them unchanged
+    while letting the module import on the test matrix, which installs the
+    package without doc dependencies. Skipping instead left this file
+    unexecuted in CI.
+    """
+    # Check sys.modules first. Once the shim below is installed, find_spec on it
+    # raises because a hand-built module has no __spec__ of its own.
+    if "sphinx" in sys.modules or importlib.util.find_spec("sphinx") is not None:
+        return
+
+    def _stub(name):
+        module = types.ModuleType(name)
+        module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
+        return module
+
+    sphinx = _stub("sphinx")
+    sphinx_util = _stub("sphinx.util")
+    sphinx_util_logging = _stub("sphinx.util.logging")
+    sphinx_util_logging.getLogger = stdlib_logging.getLogger
+    sphinx_util.logging = sphinx_util_logging
+    sphinx.util = sphinx_util
+    sys.modules["sphinx"] = sphinx
+    sys.modules["sphinx.util"] = sphinx_util
+    sys.modules["sphinx.util.logging"] = sphinx_util_logging
 
 
 @pytest.fixture
@@ -30,6 +61,7 @@ def section_module():
     path by default), so we put its parent on ``sys.path`` and import it
     as a normal package, matching ``test_dataset_page_electrodes.py``.
     """
+    _ensure_sphinx_logging_shim()
     repo_root = Path(__file__).resolve().parent.parent
     pkg_root = repo_root / "docs" / "source" / "_extensions"
     if str(pkg_root) not in sys.path:
