@@ -22,6 +22,11 @@ on:
         required: false
         type: number
         default: 4
+      dataset_timeout:
+        description: 'Seconds before killing one dataset''s digest worker (large datasets need more)'
+        required: false
+        type: number
+        default: 120
     secrets:
       DATASET_LISTINGS_TOKEN:
         required: true
@@ -112,6 +117,7 @@ jobs:
             ARGS="--input eegdash-dataset-listings/cloned"
             ARGS="$ARGS --output eegdash-dataset-listings/digested"
             ARGS="$ARGS --workers ${{ inputs.workers }}"
+            ARGS="$ARGS --dataset-timeout ${{ inputs.dataset_timeout }}"
             
             python eegdash/scripts/ingestions/3_digest.py $ARGS
           else
@@ -119,7 +125,7 @@ jobs:
           fi
 
       - name: Validate digested output
-        if: steps.changed.outputs.changed == 'true'
+        if: always() && steps.changed.outputs.changed == 'true'
         run: |
           if [ -d "eegdash-dataset-listings/digested" ] && [ "$(ls -A eegdash-dataset-listings/digested 2>/dev/null)" ]; then
             python eegdash/scripts/ingestions/4_validate_output.py \
@@ -166,14 +172,16 @@ jobs:
 
       - name: Upload digested artifacts
         uses: actions/upload-artifact@v7
-        if: steps.changed.outputs.changed == 'true'
+        if: always() && steps.changed.outputs.changed == 'true'
         with:
           name: digested-${{ inputs.source_name }}
           path: eegdash-dataset-listings/digested/
           retention-days: 7
 
+      # Partial-success commit: per-dataset errors fail the job (visibility)
+      # but must NOT discard successful digests from being persisted.
       - name: Commit digested data
-        if: steps.changed.outputs.changed == 'true'
+        if: always() && !cancelled() && steps.changed.outputs.changed == 'true'
         run: |
           cd eegdash-dataset-listings
           git config user.name "github-actions[bot]"

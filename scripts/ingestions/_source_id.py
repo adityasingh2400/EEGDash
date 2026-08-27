@@ -9,20 +9,34 @@ from __future__ import annotations
 
 import sys
 
-__all__ = ["_reconcile_source", "_source_from_dataset_id"]
+__all__ = ["_openneuro_twin_of", "_reconcile_source", "_source_from_dataset_id"]
 
 
 def _source_from_dataset_id(dataset_id: str) -> str:
-    """Infer source from dataset_id prefix pattern (ds* → openneuro, nm* → nemar)."""
+    """Infer source from dataset_id prefix pattern (ds* → openneuro, nm*/on* → nemar)."""
     if dataset_id.startswith("ds") and dataset_id[2:].isdigit():
         return "openneuro"
     if dataset_id.startswith("nm") and dataset_id[2:].isdigit():
+        return "nemar"
+    if dataset_id.startswith("on") and dataset_id[2:].isdigit():
         return "nemar"
     if "EEGManyLabs" in dataset_id:
         return "gin"
     if dataset_id.startswith("EEG2025"):
         return "nemar"
     return "unknown"
+
+
+def _openneuro_twin_of(dataset_id: str) -> str | None:
+    """Return the OpenNeuro id a NEMAR re-host mirrors, else ``None``.
+
+    NEMAR re-hosts OpenNeuro datasets keeping the numeric body and swapping the
+    prefix (``on005506`` mirrors ``ds005506``). ``nm*`` ids are NEMAR-native and
+    have no OpenNeuro twin.
+    """
+    if dataset_id.startswith("on") and dataset_id[2:].isdigit():
+        return "ds" + dataset_id[2:]
+    return None
 
 
 def _reconcile_source(
