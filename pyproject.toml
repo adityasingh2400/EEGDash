@@ -143,7 +143,12 @@ docs = [
   "moabb",
   "neuralfetch>=0.2",
   "neuralset>=0.2",
-  "eegprep",
+  # eegprep 0.3.0 (2026-08-12) dropped the top-level ``utils`` module, but
+  # braindecode 1.7.0 -- the newest release -- still calls
+  # ``eegprep.utils.round_mat`` in preprocessing/eegprep_preprocess.py, so the
+  # docs gallery dies with "module 'eegprep' has no attribute 'utils'".
+  # Floor at the newest 0.2.x and cap until a braindecode release supports 0.3.
+  "eegprep>=0.2.23,<0.3",
   # Validate the Croissant 1.0 descriptors emitted alongside the docs build.
   "mlcroissant",
 ]
@@ -155,7 +160,11 @@ digestion = [
   "beautifulsoup4",
   "python-dotenv",
   "selenium",
-  "httpx",
+  # _parser_utils.py opens its client with http2=True to multiplex concurrent
+  # HEADs, which needs the h2 package. Plain "httpx" made every dataset whose
+  # digest touched that client die with ImportError -- 209 of 211 OpenNeuro
+  # failures, for months.
+  "httpx[http2]",
   "tenacity",
   "hishel",
   "pydantic>=2",

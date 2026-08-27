@@ -11,9 +11,45 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .dataset._source_inference import nemar_twin_of
+
 DEFAULT_API_URL = "https://data.eegdash.org"
 # Retry on 429 (Too Many Requests) and standard server errors
 _RETRY = Retry(total=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1.0)
+
+
+def _nemar_twin(dataset_id: Any) -> str | None:
+    """Return the NEMAR twin id for an OpenNeuro dataset id, else ``None``."""
+    return nemar_twin_of(dataset_id) if isinstance(dataset_id, str) else None
+
+
+def _twin_value(value: Any) -> Any | None:
+    """Return ``value`` with OpenNeuro ids swapped for NEMAR twins, else ``None``.
+
+    Handles a plain id and an ``{"$in": [...]}`` list, since selecting several
+    datasets by id is a common query shape. Any other operator form (a regex, a
+    negated list) is left alone.
+    """
+    twin = _nemar_twin(value)
+    if twin is not None:
+        return twin
+    if isinstance(value, dict) and isinstance(value.get("$in"), list):
+        members = value["$in"]
+        swapped = [_nemar_twin(m) or m for m in members]
+        if swapped != members:
+            return {**value, "$in": swapped}
+    return None
+
+
+def _aliased(query: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
+    """Copy of ``query`` with ``query[key]`` swapped for its NEMAR twin(s).
+
+    Returns ``None`` when there is nothing to alias.
+    """
+    if not isinstance(query, dict):
+        return None
+    swapped = _twin_value(query.get(key))
+    return None if swapped is None else {**query, key: swapped}
 
 
 def _make_session(auth_token: str | None = None) -> requests.Session:
@@ -65,7 +101,27 @@ class EEGDashAPIClient:
         skip: int | None = None,
         **kwargs,
     ) -> list[dict[str, Any]]:
-        """Query records. Auto-paginates if no limit specified."""
+        """Query records. Auto-paginates if no limit specified.
+
+        A ``dataset`` filter naming an OpenNeuro id that returns nothing is
+        retried once against its NEMAR twin, so code written against a
+        ``ds`` id keeps working after that id is retired in favour of the
+        NEMAR re-host. Ids that still resolve are never rewritten.
+        """
+        results = self._find_records(query, limit=limit, skip=skip)
+        if not results:
+            alias = _aliased(query, "dataset")
+            if alias is not None:
+                results = self._find_records(alias, limit=limit, skip=skip)
+        return results
+
+    def _find_records(
+        self,
+        query: dict[str, Any] | None = None,
+        limit: int | None = None,
+        skip: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Single-shot record query with no twin fallback."""
         params: dict[str, Any] = {}
         if query:
             params["filter"] = json.dumps(query)
@@ -105,7 +161,20 @@ class EEGDashAPIClient:
         return results[0] if results else None
 
     def get_dataset(self, dataset_id: str) -> dict[str, Any] | None:
-        """Fetch a dataset document by ID."""
+        """Fetch a dataset document by ID.
+
+        A retired OpenNeuro id falls back to its NEMAR twin (see
+        :func:`_nemar_twin`) so existing references keep resolving.
+        """
+        doc = self._get_dataset_doc(dataset_id)
+        if doc is None:
+            twin = _nemar_twin(dataset_id)
+            if twin is not None:
+                doc = self._get_dataset_doc(twin)
+        return doc
+
+    def _get_dataset_doc(self, dataset_id: str) -> dict[str, Any] | None:
+        """Single-shot dataset fetch with no twin fallback."""
         resp = self._session.get(
             f"{self.api_url}/api/{self.database}/datasets/{dataset_id}", timeout=30
         )
@@ -117,7 +186,22 @@ class EEGDashAPIClient:
     def find_datasets(
         self, query: dict[str, Any] | None = None, limit: int = 1000
     ) -> list[dict[str, Any]]:
-        """Find datasets matching query."""
+        """Find datasets matching query.
+
+        A ``dataset_id`` filter that returns nothing is retried against its
+        NEMAR twin, mirroring :meth:`find`.
+        """
+        results = self._find_dataset_docs(query, limit=limit)
+        if not results:
+            alias = _aliased(query, "dataset_id")
+            if alias is not None:
+                results = self._find_dataset_docs(alias, limit=limit)
+        return results
+
+    def _find_dataset_docs(
+        self, query: dict[str, Any] | None = None, limit: int = 1000
+    ) -> list[dict[str, Any]]:
+        """Single-shot dataset query with no twin fallback."""
         params: dict[str, Any] = {"limit": limit}
         if query:
             params["filter"] = json.dumps(query)
@@ -132,7 +216,20 @@ class EEGDashAPIClient:
         return data
 
     def count_documents(self, query: dict[str, Any] | None = None, **kwargs) -> int:
-        """Count documents matching query."""
+        """Count documents matching query.
+
+        A zero count for an OpenNeuro ``dataset`` id is retried against its
+        NEMAR twin, mirroring :meth:`find`.
+        """
+        count = self._count_documents(query)
+        if count == 0:
+            alias = _aliased(query, "dataset")
+            if alias is not None:
+                count = self._count_documents(alias)
+        return count
+
+    def _count_documents(self, query: dict[str, Any] | None = None) -> int:
+        """Single-shot count with no twin fallback."""
         params = {"filter": json.dumps(query)} if query else {}
         resp = self._session.get(
             f"{self.api_url}/api/{self.database}/count", params=params, timeout=30
